@@ -1,0 +1,36 @@
+[project]
+name = "nsee"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "ffsedd", email = "ffsedd@gmail.com" },
+]
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+nsee = "nsee.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "mypy",
+    "ruff",
+]
+
+[build-system]
+requires = [
+    "hatchling",
+]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19.1",
+    "pytest>=9.0.2",
+    "ruff>=0.15.6",
+    "tomli>=2.4.0",
+    "tomli-w>=1.2.0",
+]
+
