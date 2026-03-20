@@ -5,3 +5,6 @@ Summary: Add your description here
 Author-email: ffsedd <ffsedd@gmail.com>
 Requires-Python: >=3.13
 Description-Content-Type: text/markdown
+Requires-Dist: numpy>=2.4.3
+Requires-Dist: pillow>=12.1.1
+Requires-Dist: scikit-image>=0.26.0

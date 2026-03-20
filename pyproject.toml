@@ -7,10 +7,14 @@ authors = [
     { name = "ffsedd", email = "ffsedd@gmail.com" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "numpy>=2.4.3",
+    "pillow>=12.1.1",
+    "scikit-image>=0.26.0",
+]
 
 [project.scripts]
-nsee = "nsee:main"
+nsee = "nsee.main:main"
 
 [build-system]
 requires = ["setuptools>=61"]
@@ -26,5 +30,7 @@ dev = [
 ]
 [tool.setuptools.packages.find]
 where = ["src"]
+[tool.setuptools]
+package-dir = {"" = "src"}
 [tool.pytest.ini_options]
 pythonpath = ["src"]

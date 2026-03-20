@@ -1,8 +1,14 @@
 README.md
 pyproject.toml
 src/nsee/__init__.py
+src/nsee/cli.py
+src/nsee/core.py
+src/nsee/main.py
+src/nsee/npsee.py
+src/nsee/npsee_gui.py
 src/nsee.egg-info/PKG-INFO
 src/nsee.egg-info/SOURCES.txt
 src/nsee.egg-info/dependency_links.txt
 src/nsee.egg-info/entry_points.txt
+src/nsee.egg-info/requires.txt
 src/nsee.egg-info/top_level.txt

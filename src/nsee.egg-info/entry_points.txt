@@ -1,2 +1,2 @@
 [console_scripts]
-nsee = nsee:main
+nsee = nsee.main:main
