@@ -9,6 +9,9 @@ from functools import lru_cache
 import numpy as np
 from PIL import Image, ImageTk
 
+from .geometry import Pose
+from .io import load_image, save_image
+
 # ---------------- LOGGING ----------------
 logging.basicConfig(
     level=logging.DEBUG,
@@ -17,55 +20,33 @@ logging.basicConfig(
 log = logging.getLogger("npsee")
 
 
-# ---------------- POINT ----------------
-@dataclass
-class Point:
-    y: int
-    x: int
-
-    def __add__(self, o: "Point") -> "Point":
-        return Point(self.y + o.y, self.x + o.x)
-
-    def __sub__(self, o: "Point") -> "Point":
-        return Point(self.y - o.y, self.x - o.x)
-
-    def __floordiv__(self, k: int) -> "Point":
-        return Point(self.y // k, self.x // k)
-
-    def __mul__(self, k: int) -> "Point":
-        return Point(self.y * k, self.x * k)
-
-
 # ---------------- STATE ----------------
+
+
 @dataclass
 class AppState:
-    mouse: Point
-    selected: Point
-    img_origin: Point
+    mouse: Pose
+    selected: Pose
+    img_origin: Pose
     zoom: int
+
+    sel_start: Pose | None = None
+    sel_end: Pose | None = None
 
 
 # ---------------- CONFIG ----------------
-CANVAS_SIZE = Point(600, 1000)
+CANVAS_SIZE = Pose(600, 1000)
 TEST_IMAGE = Path(__file__).parent.parent.parent / "data" / "test.jpg"
 
 
 # ---------------- IMAGE ----------------
-@lru_cache(maxsize=32)
-def load_image(path: str):
-    return np.asarray(Image.open(path))
-
-
 def load_image_context(path: Path):
     image_path = path.resolve()
     image_dir = image_path.parent
 
     exts = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 
-    image_list = sorted(
-        p for p in image_dir.iterdir()
-        if p.suffix.lower() in exts
-    )
+    image_list = sorted(p for p in image_dir.iterdir() if p.suffix.lower() in exts)
 
     if not image_list:
         raise ValueError(f"No images in {image_dir}")
@@ -100,12 +81,14 @@ class App:
 
         self._init_statusbar()
 
-        self.image, self.image_list, self.image_idx, self.image_path = load_image_context(Path(fpath))
+        self.image, self.image_list, self.image_idx, self.image_path = load_image_context(
+            Path(fpath)
+        )
 
         self.state = AppState(
-            mouse=Point(0, 0),
-            selected=Point(0, 0),
-            img_origin=Point(0, 0),
+            mouse=Pose(0, 0),
+            selected=Pose(0, 0),
+            img_origin=Pose(0, 0),
             zoom=2,
         )
 
@@ -136,11 +119,20 @@ class App:
         s = self.state
         px = self._image_pixel()
 
+        sel = self._selection_bounds()
+
+        if sel:
+            y1, x1, y2, x2 = sel
+            sel_txt = f"{y1}:{x1} → {y2}:{x2} | size=({y2 - y1},{x2 - x1})"
+        else:
+            sel_txt = "None"
+
         self.status.config(
             text=(
                 f"mouse=({s.mouse.y},{s.mouse.x}) | "
                 f"img_px=({px.y},{px.x}) | "
                 f"selected=({s.selected.y},{s.selected.x}) | "
+                f"sel_rect={sel_txt} | "
                 f"origin=({s.img_origin.y},{s.img_origin.x}) | "
                 f"zoom={s.zoom}"
             )
@@ -154,6 +146,12 @@ class App:
         self.canvas.bind("<Button-1>", self._on_down)
         self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_up)
+
+        # RIGHT BUTTON
+        self.canvas.bind("<Button-3>", self._on_right_down)
+        self.canvas.bind("<B3-Motion>", self._on_right_drag)
+        self.canvas.bind("<ButtonRelease-3>", self._on_right_up)
+
         self.canvas.bind("<Motion>", self._on_move)
         self.canvas.bind("<Configure>", self._on_resize)
 
@@ -165,8 +163,13 @@ class App:
         self.root.bind("<Left>", self._on_prev_image)
         self.root.bind("<Right>", self._on_next_image)
 
+        # NEW HOTKEYS
+        self.root.bind("c", self._on_crop)
+        self.root.bind("<Control-s>", self._on_save)
+        self.root.bind("s", self._on_save_as)
+
     def _update_mouse(self, event):
-        self.state.mouse = Point(
+        self.state.mouse = Pose(
             int(self.canvas.canvasy(event.y)),
             int(self.canvas.canvasx(event.x)),
         )
@@ -195,10 +198,130 @@ class App:
             self.state.zoom = min(100, self.state.zoom + 1)
 
         self.render()
-        
+
+    def _on_crop(self, event=None):
+        self._crop_to_selection()
+
+    def _on_save(self, event=None):
+        self._save()
+
+    def _on_save_as(self, event=None):
+        self._save_as()
+
     def _on_resize(self, event):
-        self.canvas_size = Point(event.height, event.width)
+        self.canvas_size = Pose(event.height, event.width)
         self.render()
+
+    def _on_right_down(self, event):
+        self._update_mouse(event)
+        self.select_anchor()
+        self.state.sel_start = self._image_pixel()
+
+    def _on_right_drag(self, event):
+        self._update_mouse(event)
+        self.state.sel_end = self._image_pixel()
+
+    def _on_right_up(self, event):
+        self._update_mouse(event)
+        self.select_anchor()
+        self.state.sel_end = self._image_pixel()
+        self.render()
+
+    # ---------------- SELECTION ----------------
+    def _draw_selection(self):
+        self.canvas.delete("selection")
+
+        s = self.state
+        if not s.sel_start or not s.sel_end:
+            return
+
+        z = s.zoom
+        origin = s.img_origin
+
+        draw = Pose(max(origin.y, 0), max(origin.x, 0))
+        crop = Pose(max(-origin.y, 0), max(-origin.x, 0))
+
+        # normalize in IMAGE space
+        y1 = min(s.sel_start.y, s.sel_end.y)
+        x1 = min(s.sel_start.x, s.sel_end.x)
+        y2 = max(s.sel_start.y, s.sel_end.y)
+        x2 = max(s.sel_start.x, s.sel_end.x)
+
+        # convert to VIEW (same as cropping logic)
+        y1_v = (y1 - crop.y) // z
+        x1_v = (x1 - crop.x) // z
+        y2_v = (y2 - crop.y) // z
+        x2_v = (x2 - crop.x) // z
+
+        self.canvas.create_rectangle(
+            x1_v + draw.x,
+            y1_v + draw.y,
+            x2_v + draw.x,
+            y2_v + draw.y,
+            outline="red",
+            width=1,
+            tags="selection",
+        )
+
+    def _selection_bounds(self):
+        s = self.state
+        if not s.sel_start or not s.sel_end:
+            return None
+
+        y1 = min(s.sel_start.y, s.sel_end.y)
+        x1 = min(s.sel_start.x, s.sel_end.x)
+        y2 = max(s.sel_start.y, s.sel_end.y)
+        x2 = max(s.sel_start.x, s.sel_end.x)
+
+        return y1, x1, y2, x2
+
+    def _get_selection_slice(self):
+        s = self.state
+        if not s.sel_start or not s.sel_end:
+            return None
+
+        y1 = min(s.sel_start.y, s.sel_end.y)
+        x1 = min(s.sel_start.x, s.sel_end.x)
+        y2 = max(s.sel_start.y, s.sel_end.y)
+        x2 = max(s.sel_start.x, s.sel_end.x)
+
+        return y1, x1, y2, x2
+
+    def _crop_to_selection(self):
+        sel = self._get_selection_slice()
+        if sel is None:
+            return
+
+        y1, x1, y2, x2 = sel
+
+        self.image = self.image[y1:y2, x1:x2]
+
+        # reset selection + view state
+        self.state.sel_start = None
+        self.state.sel_end = None
+        self.state.selected = Pose(0, 0)
+        self.state.img_origin = Pose(0, 0)
+
+        self.render()
+
+    def _save(self, path: Path | None = None):
+        if path is None:
+            path = self.image_path
+        save_image(self.image, path)
+        log.info("Saved: %s", path)
+
+    def _save_as(self):
+        from tkinter import filedialog
+
+        path = filedialog.asksaveasfilename(
+            defaultextension=".png",
+            filetypes=[("PNG", "*.png"), ("JPEG", "*.jpg"), ("All", "*.*")],
+        )
+
+        if path:
+            self._save(Path(path))
+            self.image_path = Path(path)
+            self._update_title()
 
     # ---------------- NAVIGATION ----------------
     def _load_image_at_index(self, idx: int):
@@ -222,12 +345,12 @@ class App:
         s = self.state
         z = s.zoom
 
-        crop = Point(
+        crop = Pose(
             max(-s.img_origin.y, 0),
             max(-s.img_origin.x, 0),
         )
 
-        base = Point(
+        base = Pose(
             max(s.img_origin.y, 0),
             max(s.img_origin.x, 0),
         )
@@ -236,21 +359,21 @@ class App:
 
         h, w = self.image.shape[:2]
 
-        s.selected = Point(
+        s.selected = Pose(
             min(max(pos.y, 0), h - 1),
             min(max(pos.x, 0), w - 1),
         )
 
-    def _image_pixel(self) -> Point:
+    def _image_pixel(self) -> Pose:
         s = self.state
         z = s.zoom
 
-        crop = Point(
+        crop = Pose(
             max(-s.img_origin.y, 0),
             max(-s.img_origin.x, 0),
         )
 
-        base = Point(
+        base = Pose(
             max(s.img_origin.y, 0),
             max(s.img_origin.x, 0),
         )
@@ -271,10 +394,10 @@ class App:
         s.img_origin = s.mouse - (s.selected // z)
         origin = s.img_origin
 
-        draw = Point(max(origin.y, 0), max(origin.x, 0))
-        crop = Point(max(-origin.y, 0), max(-origin.x, 0))
+        draw = Pose(max(origin.y, 0), max(origin.x, 0))
+        crop = Pose(max(-origin.y, 0), max(-origin.x, 0))
 
-        view = Point(
+        view = Pose(
             self.canvas_size.y - draw.y,
             self.canvas_size.x - draw.x,
         )
@@ -298,8 +421,14 @@ class App:
         else:
             self.canvas.coords(self._img_id, draw.x, draw.y)
             self.canvas.itemconfig(self._img_id, image=self._tk_img)
-
+        self._draw_selection()
         self._update_statusbar()
+
+    def _img_to_screen(self, p: Pose, origin: Pose, z: int) -> tuple[int, int]:
+        return (
+            (p.x // z + max(origin.x, 0)),
+            (p.y // z + max(origin.y, 0)),
+        )
 
 
 # ---------------- MAIN ----------------
