@@ -4,13 +4,12 @@ import tkinter as tk
 from pathlib import Path
 import argparse
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 from PIL import Image, ImageTk
 
 # ---------------- LOGGING ----------------
-# Structured logging helps trace coordinate issues.
-# DEBUG → geometry, INFO → events, WARNING → anomalies.
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -19,7 +18,6 @@ log = logging.getLogger("npsee")
 
 
 # ---------------- POINT ----------------
-
 @dataclass
 class Point:
     y: int
@@ -39,7 +37,6 @@ class Point:
 
 
 # ---------------- STATE ----------------
-
 @dataclass
 class AppState:
     mouse: Point
@@ -49,19 +46,44 @@ class AppState:
 
 
 # ---------------- CONFIG ----------------
-
 CANVAS_SIZE = Point(600, 1000)
 TEST_IMAGE = Path(__file__).parent.parent.parent / "data" / "test.jpg"
 
 
 # ---------------- IMAGE ----------------
-
-def load_image(path: Path):
+@lru_cache(maxsize=32)
+def load_image(path: str):
     return np.asarray(Image.open(path))
 
 
-# ---------------- APP ----------------
+def load_image_context(path: Path):
+    image_path = path.resolve()
+    image_dir = image_path.parent
 
+    exts = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+
+    image_list = sorted(
+        p for p in image_dir.iterdir()
+        if p.suffix.lower() in exts
+    )
+
+    if not image_list:
+        raise ValueError(f"No images in {image_dir}")
+
+    image_idx = next(
+        (i for i, p in enumerate(image_list) if p.resolve() == image_path),
+        None,
+    )
+
+    if image_idx is None:
+        raise ValueError(f"{image_path} not found in directory")
+
+    image = load_image(str(image_path))
+
+    return image, image_list, image_idx, image_path
+
+
+# ---------------- APP ----------------
 class App:
     def __init__(self, root, fpath=TEST_IMAGE):
         self.root = root
@@ -74,10 +96,11 @@ class App:
             highlightthickness=0,
             bd=0,
         )
-        self.canvas.pack()
+        self.canvas.pack(fill="both", expand=True)
+
         self._init_statusbar()
 
-        self.image = load_image(fpath)
+        self.image, self.image_list, self.image_idx, self.image_path = load_image_context(Path(fpath))
 
         self.state = AppState(
             mouse=Point(0, 0),
@@ -92,10 +115,12 @@ class App:
         self._bind_mouse()
         self._bind_keys()
 
-        log.info("App initialized (image=%s, zoom=%d)", fpath, self.state.zoom)
+        self._update_title()
+
+        log.info("Initialized: %s", self.image_path)
         self.render()
 
-
+    # ---------------- UI ----------------
     def _init_statusbar(self):
         self.status = tk.Label(
             self.root,
@@ -106,37 +131,41 @@ class App:
             font=("TkDefaultFont", 9),
         )
         self.status.pack(side="bottom", fill="x")
-            
+
     def _update_statusbar(self):
         s = self.state
+        px = self._image_pixel()
 
-        img_px = self._image_pixel()
-        h, w = self.image.shape[:2]
-
-        text = (
-            f"mouse=({s.mouse.y},{s.mouse.x}) | "
-            f"img_px=({img_px.y},{img_px.x}) | "
-            f"selected=({s.selected.y},{s.selected.x}) | "
-            f"origin=({s.img_origin.y},{s.img_origin.x}) | "
-            f"zoom={s.zoom}"
+        self.status.config(
+            text=(
+                f"mouse=({s.mouse.y},{s.mouse.x}) | "
+                f"img_px=({px.y},{px.x}) | "
+                f"selected=({s.selected.y},{s.selected.x}) | "
+                f"origin=({s.img_origin.y},{s.img_origin.x}) | "
+                f"zoom={s.zoom}"
+            )
         )
 
-        self.status.config(text=text)
-    # ---------------- INPUT ----------------
+    def _update_title(self):
+        self.root.title(f"{self.image_path.name} — {self.image_path.parent}")
 
+    # ---------------- INPUT ----------------
     def _bind_mouse(self):
         self.canvas.bind("<Button-1>", self._on_down)
         self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_up)
         self.canvas.bind("<Motion>", self._on_move)
+        self.canvas.bind("<Configure>", self._on_resize)
 
     def _bind_keys(self):
         self.root.bind("<MouseWheel>", self._on_wheel)
         self.root.bind("<Button-4>", self._on_wheel)
         self.root.bind("<Button-5>", self._on_wheel)
 
+        self.root.bind("<Left>", self._on_prev_image)
+        self.root.bind("<Right>", self._on_next_image)
+
     def _update_mouse(self, event):
-        # Convert Tk event coords -> canvas coords (important for accuracy)
         self.state.mouse = Point(
             int(self.canvas.canvasy(event.y)),
             int(self.canvas.canvasx(event.x)),
@@ -165,20 +194,34 @@ class App:
         else:
             self.state.zoom = min(100, self.state.zoom + 1)
 
-        log.info("zoom changed → %d", self.state.zoom)
+        self.render()
+        
+    def _on_resize(self, event):
+        self.canvas_size = Point(event.height, event.width)
         self.render()
 
-    # ---------------- LOGIC ----------------
+    # ---------------- NAVIGATION ----------------
+    def _load_image_at_index(self, idx: int):
+        idx = idx % len(self.image_list)
 
+        self.image_idx = idx
+        self.image_path = self.image_list[idx]
+        self.image = load_image(str(self.image_path))
+
+        self._update_title()
+        self.render()
+
+    def _on_prev_image(self, event=None):
+        self._load_image_at_index(self.image_idx - 1)
+
+    def _on_next_image(self, event=None):
+        self._load_image_at_index(self.image_idx + 1)
+
+    # ---------------- LOGIC ----------------
     def select_anchor(self):
-        """
-        Select pixel under mouse.
-        Keeps selected pixel stable across zoom changes.
-        """
         s = self.state
         z = s.zoom
 
-        # Crop adjustment (when image is partially outside canvas)
         crop = Point(
             max(-s.img_origin.y, 0),
             max(-s.img_origin.x, 0),
@@ -198,10 +241,23 @@ class App:
             min(max(pos.x, 0), w - 1),
         )
 
-        log.debug("selected = %s", s.selected)
+    def _image_pixel(self) -> Point:
+        s = self.state
+        z = s.zoom
+
+        crop = Point(
+            max(-s.img_origin.y, 0),
+            max(-s.img_origin.x, 0),
+        )
+
+        base = Point(
+            max(s.img_origin.y, 0),
+            max(s.img_origin.x, 0),
+        )
+
+        return (s.mouse - base + crop) * z
 
     # ---------------- RENDER ----------------
-
     def _to_photo(self, arr):
         if arr.dtype != np.uint8:
             arr = np.clip(arr, 0, 1)
@@ -212,93 +268,48 @@ class App:
         s = self.state
         z = s.zoom
 
-        # Compute where the image should start on canvas
         s.img_origin = s.mouse - (s.selected // z)
         origin = s.img_origin
 
-        log.debug("origin = %s", origin)
+        draw = Point(max(origin.y, 0), max(origin.x, 0))
+        crop = Point(max(-origin.y, 0), max(-origin.x, 0))
 
-        # Clamp drawing region to visible canvas
-        draw = Point(
-            max(origin.y, 0),
-            max(origin.x, 0),
-        )
-
-        # Determine crop offset when image goes outside canvas
-        crop = Point(
-            max(-origin.y, 0),
-            max(-origin.x, 0),
-        )
-
-        # Visible region size
         view = Point(
             self.canvas_size.y - draw.y,
             self.canvas_size.x - draw.x,
         )
 
-        # Convert canvas region → image region
         y0 = crop.y * z
         x0 = crop.x * z
         y1 = (crop.y + view.y) * z
         x1 = (crop.x + view.x) * z
 
-        log.debug("crop = y[%d:%d], x[%d:%d], zoom=%d", y0, y1, x0, x1, z)
-
         cropped = self.image[y0:y1:z, x0:x1:z]
 
         if cropped.size == 0:
-            log.warning("empty crop (check bounds or zoom)")
             return
 
         self._tk_img = self._to_photo(cropped)
 
         if self._img_id is None:
             self._img_id = self.canvas.create_image(
-                draw.x,
-                draw.y,
-                anchor="nw",
-                image=self._tk_img,
+                draw.x, draw.y, anchor="nw", image=self._tk_img
             )
-            log.debug("image created at %s", draw)
         else:
             self.canvas.coords(self._img_id, draw.x, draw.y)
             self.canvas.itemconfig(self._img_id, image=self._tk_img)
-            log.debug("image moved to %s", draw)
 
+        self._update_statusbar()
 
-    def _image_pixel(self) -> Point:
-        """
-        Map current mouse position → image pixel coordinates.
-
-        This is the inverse of rendering:
-        canvas → image space, accounting for:
-        - origin (pan)
-        - zoom
-        """
-        s = self.state
-        z = s.zoom
-
-        # reverse of render(): image origin on canvas
-        origin = s.img_origin
-
-        # convert mouse → image coordinate system
-        y = (s.mouse.y - origin.y) * z
-        x = (s.mouse.x - origin.x) * z
-
-        return Point(y, x)
 
 # ---------------- MAIN ----------------
-
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("image", nargs="?", default=TEST_IMAGE)
     args = p.parse_args()
 
     root = tk.Tk()
-    root.title("npsee")
-
     App(root, fpath=args.image)
-
     root.mainloop()
 
 
