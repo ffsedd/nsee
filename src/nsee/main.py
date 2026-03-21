@@ -1,10 +1,8 @@
-#!/usr/bin/env python3
+import argparse
 import logging
 import tkinter as tk
-from pathlib import Path
-import argparse
 from dataclasses import dataclass
-from functools import lru_cache
+from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageTk
