@@ -1,0 +1,7 @@
+{
+  "src/nsee/tests/test_camera.py::test_round_trip_identity": true,
+  "src/nsee/tests/test_camera.py::test_zoom_changes_scale": true,
+  "src/nsee/tests/test_camera.py::test_pan_moves_center": true,
+  "src/nsee/tests/test_camera.py::test_zoom_at_cursor_keeps_point_fixed": true,
+  "tests/test_transform.py::test_origin_shift": true
+}
