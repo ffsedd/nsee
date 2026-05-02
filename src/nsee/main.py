@@ -1,5 +1,4 @@
 import argparse
-import logging
 import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,14 +9,10 @@ from PIL import Image, ImageTk
 from .geometry import Pose
 from .imagelist import ImageList  # <-- NEW
 from .io import save_image
+from .logger import setup_logger
 from .ops import rotate_jpeg_lossless
 
-# ---------------- LOGGING ----------------
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-)
-log = logging.getLogger("npsee")
+log = setup_logger("nsee")  # Default to INFO, can be overridden in main()
 
 
 # ---------------- STATE ----------------
@@ -211,16 +206,16 @@ class App:
     # ---------------- OPS ----------------
 
     def _on_rotate_right(self, event=None):
-        log.info("Rotate right")
+        log.debug("Rotate right")
         path = self.image_path
 
         ok = rotate_jpeg_lossless(path)
 
         if not ok:
-            log.warning("Unsupported file: %s", path)
+            log.warning(f"Rotate failed for file: {path}")
             return
         else:
-            log.info("Rotated: %s", path)
+            log.info(f"Rotated: {path}")
         self._load_current()
 
     # ---------------- NAVIGATION (UPDATED) ----------------
@@ -228,7 +223,7 @@ class App:
         # 🔥 refresh directory every time
 
         self.image_path = self.imagelist.current
-        log.info("Loading: %s", self.image_path)
+        log.debug("Loading: %s", self.image_path)
         self.image = self.imagelist.load()
 
         self._update_title()
@@ -401,9 +396,13 @@ class App:
 
 # ---------------- MAIN ----------------
 def main():
+    global log
     p = argparse.ArgumentParser()
     p.add_argument("image", nargs="?", default=TEST_IMAGE)
+    p.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = p.parse_args()
+
+    log.setLevel(10 if args.debug else 20)
 
     root = tk.Tk()
     App(root, fpath=args.image)
