@@ -1,12 +1,12 @@
 [project]
 name = "nsee"
 version = "0.1.0"
-description = "Add your description here"
+description = "numpy image viewer"
 readme = "README.md"
 authors = [
     { name = "ffsedd", email = "ffsedd@gmail.com" }
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.4.3",
     "pillow>=12.1.1",

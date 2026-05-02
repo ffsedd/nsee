@@ -1,9 +1,9 @@
 Metadata-Version: 2.4
 Name: nsee
 Version: 0.1.0
-Summary: Add your description here
+Summary: numpy image viewer
 Author-email: ffsedd <ffsedd@gmail.com>
-Requires-Python: >=3.13
+Requires-Python: >=3.11
 Description-Content-Type: text/markdown
 Requires-Dist: numpy>=2.4.3
 Requires-Dist: pillow>=12.1.1
