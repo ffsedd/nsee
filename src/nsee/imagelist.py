@@ -36,7 +36,7 @@ class ImageList:
         return self.paths[self.index]
 
     def load(self) -> np.ndarray:
-        return load_image(str(self.current))
+        return load_image(Path(self.current))
 
     def next(self) -> Path:
         self.index = (self.index + 1) % len(self.paths)

@@ -1,6 +1,8 @@
 
 
-uv tool install .
+sudo apt install libjpeg-turbo-progs -y
+
+uv tool install -e .
 
 mkdir -p ~/.local/share/icons/hicolor/128x128/apps/
 cp resources/nsee_icon.png ~/.local/share/icons/hicolor/128x128/apps/nsee.png

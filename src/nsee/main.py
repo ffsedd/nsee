@@ -8,8 +8,9 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from .geometry import Pose
-from .image_list import ImageList  # <-- NEW
+from .imagelist import ImageList  # <-- NEW
 from .io import save_image
+from .ops import rotate_jpeg_lossless
 
 # ---------------- LOGGING ----------------
 logging.basicConfig(
@@ -56,11 +57,11 @@ class App:
 
         # -------- IMAGE LIST (NEW) --------
         start_path = Path(fpath)
-        self.images = ImageList(start_path.parent)
-        self.images.refresh(current=start_path)
+        self.imagelist = ImageList(start_path.parent)
+        self.imagelist.refresh(current=start_path)
 
-        self.image_path = self.images.current
-        self.image = self.images.load()
+        self.image_path = self.imagelist.current
+        self.image = self.imagelist.load()
 
         # -------- STATE --------
         self.state = AppState(
@@ -144,6 +145,8 @@ class App:
         self.root.bind("<Control-s>", self._on_save)
         self.root.bind("s", self._on_save_as)
 
+        self.root.bind("r", self._on_rotate_right)
+
         self.canvas.focus_set()
 
     def _update_mouse(self, event):
@@ -205,24 +208,40 @@ class App:
         self.state.sel_end = self._image_pixel()
         self.render()
 
+    # ---------------- OPS ----------------
+
+    def _on_rotate_right(self, event=None):
+        log.info("Rotate right")
+        path = self.image_path
+
+        ok = rotate_jpeg_lossless(path)
+
+        if not ok:
+            log.warning("Unsupported file: %s", path)
+            return
+        else:
+            log.info("Rotated: %s", path)
+        self._load_current()
+
     # ---------------- NAVIGATION (UPDATED) ----------------
     def _load_current(self):
         # 🔥 refresh directory every time
 
-        self.image_path = self.images.current
-        self.image = self.images.load()
+        self.image_path = self.imagelist.current
+        log.info("Loading: %s", self.image_path)
+        self.image = self.imagelist.load()
 
         self._update_title()
         self.render()
 
     def _on_prev_image(self, event=None):
-        self.images.refresh()
-        self.images.prev()
+        self.imagelist.refresh()
+        self.imagelist.prev()
         self._load_current()
 
     def _on_next_image(self, event=None):
-        self.images.refresh()
-        self.images.next()
+        self.imagelist.refresh()
+        self.imagelist.next()
         self._load_current()
 
     # ---------------- SELECTION ----------------
