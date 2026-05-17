@@ -51,9 +51,11 @@ class App:
         self._init_statusbar()
 
         # -------- IMAGE LIST (NEW) --------
-        start_path = Path(fpath)
-        self.imagelist = ImageList(start_path.parent)
-        self.imagelist.refresh(current=start_path)
+        path = Path(fpath) 
+        imagedir = path if path.is_dir() else path.parent
+        self.imagelist = ImageList(imagedir)
+        if path.is_file():
+            self.imagelist.refresh(current=path)
 
         self.image_path = self.imagelist.current
         self.image = self.imagelist.load()
