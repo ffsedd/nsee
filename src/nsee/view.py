@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageTk
 
-from .geometry import Pose, ViewerState, selection_canvas_bounds, visible_image_region
+from .geometry import Pose, ViewerState, selection_canvas_bounds
 
 
 class ImageView:
@@ -34,6 +34,8 @@ class ImageView:
         self.status.pack(side="bottom", fill="x")
         self._image_id: int | None = None
         self._tk_image: ImageTk.PhotoImage | None = None
+        self._source_image: np.ndarray | None = None
+        self._cached_zoom: int | None = None
 
     def set_title(self, path: Path) -> None:
         self.root.title(f"{path.name} — {path.parent}")
@@ -47,18 +49,28 @@ class ImageView:
 
     def render(self, image: np.ndarray, state: ViewerState) -> None:
         state.update_origin()
-        ys, xs, draw = visible_image_region(
-            state.img_origin, self.canvas_size, state.zoom
-        )
-        cropped = image[ys, xs]
-        if cropped.size:
-            self._tk_image = self._to_photo(cropped)
+        if image is not self._source_image or state.zoom != self._cached_zoom:
+            self._tk_image = self._to_photo(image[:: state.zoom, :: state.zoom])
+            self._source_image = image
+            self._cached_zoom = state.zoom
+
+        if (
+            self._tk_image is not None
+            and self._tk_image.width()
+            and self._tk_image.height()
+        ):
             if self._image_id is None:
                 self._image_id = self.canvas.create_image(
-                    draw.x, draw.y, anchor="nw", image=self._tk_image, tags="image"
+                    state.img_origin.x,
+                    state.img_origin.y,
+                    anchor="nw",
+                    image=self._tk_image,
+                    tags="image",
                 )
             else:
-                self.canvas.coords(self._image_id, draw.x, draw.y)
+                self.canvas.coords(
+                    self._image_id, state.img_origin.x, state.img_origin.y
+                )
                 self.canvas.itemconfig(
                     self._image_id, image=self._tk_image, state="normal"
                 )
