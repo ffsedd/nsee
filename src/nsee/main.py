@@ -1,411 +1,202 @@
+from __future__ import annotations
+
 import argparse
+import logging
 import tkinter as tk
-from dataclasses import dataclass
 from pathlib import Path
+from tkinter import filedialog, messagebox
 
-import numpy as np
-from PIL import Image, ImageTk
-
-from .geometry import Pose
-from .imagelist import ImageList  # <-- NEW
+from .geometry import Pose, ViewerState
+from .imagelist import ImageList
 from .io import save_image
 from .logger import setup_logger
 from .ops import rotate_jpeg_lossless
+from .view import ImageView
 
-log = setup_logger("nsee")  # Default to INFO, can be overridden in main()
+log = setup_logger("nsee")
 
-
-# ---------------- STATE ----------------
-@dataclass
-class AppState:
-    mouse: Pose
-    selected: Pose
-    img_origin: Pose
-    zoom: int
-
-    sel_start: Pose | None = None
-    sel_end: Pose | None = None
-
-
-# ---------------- CONFIG ----------------
 CANVAS_SIZE = Pose(600, 1000)
 TEST_IMAGE = Path.home() / ".local/share/icons/hicolor/128x128/apps/nsee.png"
 
 
-# ---------------- APP ----------------
 class App:
-    def __init__(self, root, fpath):
-        print(f"nsee: {fpath}")
-        self.root = root
-        self.canvas_size = CANVAS_SIZE
+    """Coordinate user actions and image data; rendering lives in ImageView."""
 
-        self.canvas = tk.Canvas(
-            root,
-            width=self.canvas_size.x,
-            height=self.canvas_size.y,
-            highlightthickness=0,
-            bd=0,
-        )
-        self.canvas.pack(fill="both", expand=True)
-
-        self._init_statusbar()
-
-        # -------- IMAGE LIST (NEW) --------
-        path = Path(fpath) 
-        imagedir = path if path.is_dir() else path.parent
-        self.imagelist = ImageList(imagedir)
+    def __init__(self, root: tk.Tk, fpath: str | Path) -> None:
+        path = Path(fpath).expanduser()
+        directory = path if path.is_dir() else path.parent
+        self.imagelist = ImageList(directory)
         if path.is_file():
             self.imagelist.refresh(current=path)
 
         self.image_path = self.imagelist.current
         self.image = self.imagelist.load()
-
-        # -------- STATE --------
-        self.state = AppState(
-            mouse=Pose(0, 0),
-            selected=Pose(0, 0),
-            img_origin=Pose(0, 0),
-            zoom=2,
-        )
-
-        self._img_id = None
-        self._tk_img = None
-
+        self.state = ViewerState()
+        self.view = ImageView(root, CANVAS_SIZE)
+        self.canvas = self.view.canvas
         self._bind_mouse()
         self._bind_keys()
-
-        self._update_title()
-
+        self.view.set_title(self.image_path)
         log.info("Initialized: %s", self.image_path)
-        self.render()
+        self._render()
 
-    # ---------------- UI ----------------
-    def _init_statusbar(self):
-        self.status = tk.Label(
-            self.root,
-            anchor="w",
-            relief="sunken",
-            padx=6,
-            pady=2,
-            font=("TkDefaultFont", 9),
-        )
-        self.status.pack(side="bottom", fill="x")
-
-    def _update_statusbar(self):
-        s = self.state
-        px = self._image_pixel()
-
-        sel = self._selection_bounds()
-
-        if sel:
-            y1, x1, y2, x2 = sel
-            sel_txt = f"{y1}:{x1} → {y2}:{x2} | size=({y2 - y1},{x2 - x1})"
-        else:
-            sel_txt = "None"
-
-        self.status.config(
-            text=(
-                f"mouse=({s.mouse.y},{s.mouse.x}) | "
-                f"img_px=({px.y},{px.x}) | "
-                f"selected=({s.selected.y},{s.selected.x}) | "
-                f"sel_rect={sel_txt} | "
-                f"origin=({s.img_origin.y},{s.img_origin.x}) | "
-                f"zoom={s.zoom}"
-            )
-        )
-
-    def _update_title(self):
-        self.root.title(f"{self.image_path.name} — {self.image_path.parent}")
-
-    # ---------------- INPUT ----------------
-    def _bind_mouse(self):
+    def _bind_mouse(self) -> None:
         self.canvas.bind("<Button-1>", self._on_down)
         self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_up)
-
         self.canvas.bind("<Button-3>", self._on_right_down)
         self.canvas.bind("<B3-Motion>", self._on_right_drag)
         self.canvas.bind("<ButtonRelease-3>", self._on_right_up)
-
         self.canvas.bind("<Motion>", self._on_move)
         self.canvas.bind("<Configure>", self._on_resize)
 
-    def _bind_keys(self):
-        self.root.bind("<MouseWheel>", self._on_wheel)
-        self.root.bind("<Button-4>", self._on_wheel)
-        self.root.bind("<Button-5>", self._on_wheel)
-
-        self.root.bind("<Left>", self._on_prev_image)
-        self.root.bind("<Right>", self._on_next_image)
-
-        self.root.bind("c", self._on_crop)
-        self.root.bind("<Control-s>", self._on_save)
-        self.root.bind("s", self._on_save_as)
-
-        self.root.bind("r", self._on_rotate_right)
-
+    def _bind_keys(self) -> None:
+        root = self.view.root
+        root.bind("<MouseWheel>", self._on_wheel)
+        root.bind("<Button-4>", self._on_wheel)
+        root.bind("<Button-5>", self._on_wheel)
+        root.bind("<Left>", self._on_prev_image)
+        root.bind("<Right>", self._on_next_image)
+        root.bind("c", self._on_crop)
+        root.bind("<Control-s>", self._on_save)
+        root.bind("s", self._on_save_as)
+        root.bind("r", self._on_rotate_right)
         self.canvas.focus_set()
 
-    def _update_mouse(self, event):
+    def _update_mouse(self, event) -> None:
         self.state.mouse = Pose(
-            int(self.canvas.canvasy(event.y)),
-            int(self.canvas.canvasx(event.x)),
+            int(self.canvas.canvasy(event.y)), int(self.canvas.canvasx(event.x))
         )
 
-    def _on_down(self, event):
+    def _on_down(self, event) -> None:
         self._update_mouse(event)
-        self.select_anchor()
+        self.state.select_anchor(self.image.shape)
 
-    def _on_drag(self, event):
+    def _on_drag(self, event) -> None:
         self._update_mouse(event)
 
-    def _on_up(self, event):
+    def _on_up(self, event) -> None:
         self._update_mouse(event)
-        self.render()
+        self._render()
 
-    def _on_move(self, event):
+    def _on_move(self, event) -> None:
         self._update_mouse(event)
-        self._update_statusbar()
+        self.view.update_status(self.state)
 
-    def _on_wheel(self, event):
-        self.select_anchor()
-
-        if event.num == 4 or event.delta > 0:
+    def _on_wheel(self, event) -> None:
+        self.state.select_anchor(self.image.shape)
+        if getattr(event, "num", None) == 4 or getattr(event, "delta", 0) > 0:
             self.state.zoom = max(1, self.state.zoom - 1)
         else:
             self.state.zoom = min(100, self.state.zoom + 1)
+        self._render()
 
-        self.render()
+    def _on_resize(self, event) -> None:
+        self.view.canvas_size = Pose(event.height, event.width)
+        self._render()
 
-    def _on_crop(self, event=None):
-        self._crop_to_selection()
-
-    def _on_save(self, event=None):
-        self._save()
-
-    def _on_save_as(self, event=None):
-        self._save_as()
-
-    def _on_resize(self, event):
-        self.canvas_size = Pose(event.height, event.width)
-        self.render()
-
-    def _on_right_down(self, event):
+    def _on_right_down(self, event) -> None:
         self._update_mouse(event)
-        self.select_anchor()
-        self.state.sel_start = self._image_pixel()
+        self.state.select_anchor(self.image.shape)
+        self.state.sel_start = self.state.image_pixel()
 
-    def _on_right_drag(self, event):
+    def _on_right_drag(self, event) -> None:
         self._update_mouse(event)
-        self.state.sel_end = self._image_pixel()
+        self.state.sel_end = self.state.image_pixel()
 
-    def _on_right_up(self, event):
+    def _on_right_up(self, event) -> None:
         self._update_mouse(event)
-        self.select_anchor()
-        self.state.sel_end = self._image_pixel()
-        self.render()
+        self.state.select_anchor(self.image.shape)
+        self.state.sel_end = self.state.image_pixel()
+        self._render()
 
-    # ---------------- OPS ----------------
-
-    def _on_rotate_right(self, event=None):
-        log.debug("Rotate right")
-        path = self.image_path
-
-        ok = rotate_jpeg_lossless(path)
-
-        if not ok:
-            log.warning(f"Rotate failed for file: {path}")
+    def _on_crop(self, event=None) -> None:
+        bounds = self.state.selection_bounds
+        if bounds is None:
             return
-        else:
-            log.info(f"Rotated: {path}")
-        self._load_current()
-
-    # ---------------- NAVIGATION (UPDATED) ----------------
-    def _load_current(self):
-        # 🔥 refresh directory every time
-
-        self.image_path = self.imagelist.current
-        log.debug("Loading: %s", self.image_path)
-        self.image = self.imagelist.load()
-
-        self._update_title()
-        self.render()
-
-    def _on_prev_image(self, event=None):
-        self.imagelist.refresh()
-        self.imagelist.prev()
-        self._load_current()
-
-    def _on_next_image(self, event=None):
-        self.imagelist.refresh()
-        self.imagelist.next()
-        self._load_current()
-
-    # ---------------- SELECTION ----------------
-    def _selection_bounds(self):
-        s = self.state
-        if not s.sel_start or not s.sel_end:
-            return None
-
-        y1 = min(s.sel_start.y, s.sel_end.y)
-        x1 = min(s.sel_start.x, s.sel_end.x)
-        y2 = max(s.sel_start.y, s.sel_end.y)
-        x2 = max(s.sel_start.x, s.sel_end.x)
-
-        return y1, x1, y2, x2
-
-    def _get_selection_slice(self):
-        return self._selection_bounds()
-
-    def _crop_to_selection(self):
-        sel = self._get_selection_slice()
-        if sel is None:
+        y1, x1, y2, x2 = bounds
+        height, width = self.image.shape[:2]
+        y1, y2 = max(0, y1), min(height, y2)
+        x1, x2 = max(0, x1), min(width, x2)
+        if y1 >= y2 or x1 >= x2:
             return
-
-        y1, x1, y2, x2 = sel
-        self.image = self.image[y1:y2, x1:x2]
-
+        self.image = self.image[y1:y2, x1:x2].copy()
         self.state.sel_start = None
         self.state.sel_end = None
         self.state.selected = Pose(0, 0)
         self.state.img_origin = Pose(0, 0)
+        self._render()
 
-        self.render()
+    def _on_save(self, event=None) -> None:
+        self._save()
 
-    def _save(self, path: Path | None = None):
-        if path is None:
-            path = self.image_path
-        save_image(self.image, path)
-        log.info("Saved: %s", path)
-
-    def _save_as(self):
-        from tkinter import filedialog
-
+    def _on_save_as(self, event=None) -> None:
         path = filedialog.asksaveasfilename(
             defaultextension=".png",
             filetypes=[("PNG", "*.png"), ("JPEG", "*.jpg"), ("All", "*.*")],
         )
-
         if path:
             self._save(Path(path))
             self.image_path = Path(path)
-            self._update_title()
+            self.view.set_title(self.image_path)
 
-    # ---------------- LOGIC ----------------
-    def select_anchor(self):
-        s = self.state
-        z = s.zoom
-
-        crop = Pose(max(-s.img_origin.y, 0), max(-s.img_origin.x, 0))
-        base = Pose(max(s.img_origin.y, 0), max(s.img_origin.x, 0))
-
-        pos = (s.mouse - base + crop) * z
-        h, w = self.image.shape[:2]
-
-        s.selected = Pose(
-            min(max(pos.y, 0), h - 1),
-            min(max(pos.x, 0), w - 1),
-        )
-
-    def _image_pixel(self) -> Pose:
-        s = self.state
-        z = s.zoom
-
-        crop = Pose(max(-s.img_origin.y, 0), max(-s.img_origin.x, 0))
-        base = Pose(max(s.img_origin.y, 0), max(s.img_origin.x, 0))
-
-        return (s.mouse - base + crop) * z
-
-    # ---------------- RENDER ----------------
-    def _to_photo(self, arr):
-        if arr.dtype != np.uint8:
-            arr = np.clip(arr, 0, 1)
-            arr = (arr * 255).astype(np.uint8)
-        return ImageTk.PhotoImage(Image.fromarray(arr))
-
-    def render(self):
-        s = self.state
-        z = s.zoom
-
-        s.img_origin = s.mouse - (s.selected // z)
-
-        origin = s.img_origin
-
-        draw = Pose(max(origin.y, 0), max(origin.x, 0))
-        crop = Pose(max(-origin.y, 0), max(-origin.x, 0))
-
-        view = Pose(
-            self.canvas_size.y - draw.y,
-            self.canvas_size.x - draw.x,
-        )
-
-        y0 = crop.y * z
-        x0 = crop.x * z
-        y1 = (crop.y + view.y) * z
-        x1 = (crop.x + view.x) * z
-
-        cropped = self.image[y0:y1:z, x0:x1:z]
-
-        if cropped.size == 0:
+    def _save(self, path: Path | None = None) -> None:
+        target = path or self.image_path
+        try:
+            save_image(self.image, target)
+        except (OSError, ValueError) as exc:
+            log.exception("Unable to save image: %s", target)
+            messagebox.showerror("Save failed", str(exc), parent=self.view.root)
             return
+        log.info("Saved: %s", target)
 
-        self._tk_img = self._to_photo(cropped)
+    def _on_rotate_right(self, event=None) -> None:
+        path = self.image_path
+        try:
+            rotated = rotate_jpeg_lossless(path)
+        except (OSError, RuntimeError) as exc:
+            log.exception("Unable to rotate image: %s", path)
+            messagebox.showerror("Rotate failed", str(exc), parent=self.view.root)
+            return
+        if not rotated:
+            log.warning("Rotate is only supported for JPEG images: %s", path)
+            return
+        self._load_current()
 
-        if self._img_id is None:
-            self._img_id = self.canvas.create_image(
-                draw.x, draw.y, anchor="nw", image=self._tk_img
-            )
+    def _on_prev_image(self, event=None) -> None:
+        self._navigate(-1)
+
+    def _on_next_image(self, event=None) -> None:
+        self._navigate(1)
+
+    def _navigate(self, step: int) -> None:
+        self.imagelist.refresh(current=self.image_path)
+        if step < 0:
+            self.imagelist.prev()
         else:
-            self.canvas.coords(self._img_id, draw.x, draw.y)
-            self.canvas.itemconfig(self._img_id, image=self._tk_img)
+            self.imagelist.next()
+        self._load_current()
 
-        self._draw_selection()
-        self._update_statusbar()
+    def _load_current(self) -> None:
+        self.image_path = self.imagelist.current
+        self.image = self.imagelist.load()
+        self.view.set_title(self.image_path)
+        self.state.sel_start = None
+        self.state.sel_end = None
+        self.state.selected = Pose(0, 0)
+        self.state.img_origin = Pose(0, 0)
+        self._render()
 
-    def _draw_selection(self):
-        self.canvas.delete("selection")
-
-        s = self.state
-        if not s.sel_start or not s.sel_end:
-            return
-
-        z = s.zoom
-        origin = s.img_origin
-
-        draw = Pose(max(origin.y, 0), max(origin.x, 0))
-        crop = Pose(max(-origin.y, 0), max(-origin.x, 0))
-
-        y1 = min(s.sel_start.y, s.sel_end.y)
-        x1 = min(s.sel_start.x, s.sel_end.x)
-        y2 = max(s.sel_start.y, s.sel_end.y)
-        x2 = max(s.sel_start.x, s.sel_end.x)
-
-        y1_v = (y1 - crop.y) // z
-        x1_v = (x1 - crop.x) // z
-        y2_v = (y2 - crop.y) // z
-        x2_v = (x2 - crop.x) // z
-
-        self.canvas.create_rectangle(
-            x1_v + draw.x,
-            y1_v + draw.y,
-            x2_v + draw.x,
-            y2_v + draw.y,
-            outline="red",
-            width=1,
-            tags="selection",
-        )
+    def _render(self) -> None:
+        self.view.render(self.image, self.state)
 
 
-# ---------------- MAIN ----------------
-def main():
-    global log
-    p = argparse.ArgumentParser()
-    p.add_argument("image", nargs="?", default=TEST_IMAGE)
-    p.add_argument("--debug", action="store_true", help="Enable debug logging")
-    args = p.parse_args()
-
-    log.setLevel(10 if args.debug else 20)
-
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("image", nargs="?", default=TEST_IMAGE)
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    args = parser.parse_args()
+    log.setLevel(logging.DEBUG if args.debug else logging.INFO)
     root = tk.Tk()
     App(root, fpath=args.image)
     root.mainloop()

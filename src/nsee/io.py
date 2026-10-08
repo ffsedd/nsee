@@ -18,7 +18,7 @@ def load_image(path: Path) -> np.ndarray:
 def _load_image_cached(path: Path, mtime_ns: int) -> np.ndarray:
     with Image.open(path) as im:
         log.debug("Loaded image: %s", path)
-        return np.asarray(im)
+        return np.array(im)
 
 
 def save_image(arr: np.ndarray, path: Path) -> None:

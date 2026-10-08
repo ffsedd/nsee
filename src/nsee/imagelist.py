@@ -18,8 +18,7 @@ def _scan_images(directory: Path, exts: Iterable[str]) -> list[Path]:
     exts_l = {e.lower() for e in exts}
 
     paths = sorted(
-        p for p in directory.iterdir()
-        if p.is_file() and p.suffix.lower() in exts_l
+        p for p in directory.iterdir() if p.is_file() and p.suffix.lower() in exts_l
     )
 
     if not paths:
@@ -56,8 +55,8 @@ class ImageList:
 
         if current is not None:
             current = current.resolve()
-            for i, p in enumerate(paths):
-                if p.resolve() == current:
+            for i, path in enumerate(paths):
+                if path.resolve() == current:
                     self._index = i
                     break
             else:
