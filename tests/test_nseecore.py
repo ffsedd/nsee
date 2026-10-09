@@ -1,7 +1,15 @@
 import numpy as np
 import pytest
 
-from nseecore import Pose, ViewerState, selection_canvas_bounds, visible_image_region
+from nseecore import (
+    FrameCache,
+    NumpySource,
+    Pose,
+    ViewerState,
+    make_viewport_frame,
+    selection_canvas_bounds,
+    visible_image_region,
+)
 
 
 def test_visible_region_is_bounded_to_canvas_and_is_a_view() -> None:
@@ -153,3 +161,93 @@ def test_invalid_geometry_is_rejected() -> None:
         visible_image_region((10, 10), Pose(-1, 5), ViewerState())
     with pytest.raises(ValueError):
         ViewerState(zoom=0)
+
+
+def test_numpy_source_wraps_without_copying_and_tracks_revision() -> None:
+    image = np.arange(12).reshape(3, 4)
+    source = NumpySource(image)
+    view = source.read_region(slice(0, 3, 2), slice(1, 4, 2))
+
+    assert source.shape == image.shape
+    assert source.dtype == image.dtype
+    assert np.shares_memory(image, view)
+    assert source.revision == 0
+    source.mark_dirty()
+    assert source.revision == 1
+
+
+def test_numpy_source_accepts_memmap(tmp_path) -> None:
+    path = tmp_path / "image.dat"
+    mapped = np.memmap(path, mode="w+", dtype=np.uint16, shape=(8, 10))
+    mapped[:] = np.arange(80).reshape(8, 10)
+    mapped.flush()
+    source = NumpySource(mapped)
+
+    view = source.read_region(slice(2, 8, 2), slice(1, 9, 3))
+    np.testing.assert_array_equal(view, mapped[2:8:2, 1:9:3])
+    assert np.shares_memory(mapped, view)
+
+
+def test_make_viewport_frame_returns_only_visible_source_view() -> None:
+    image = np.arange(100 * 200, dtype=np.uint16).reshape(100, 200)
+    source = NumpySource(image)
+    state = ViewerState(zoom=4)
+
+    frame = make_viewport_frame(source, Pose(20, 30), state)
+
+    assert frame.array.shape == (20, 30)
+    assert np.shares_memory(image, frame.array)
+    assert frame.zoom == 4
+    assert frame.source_revision == 0
+
+
+def test_converted_viewport_cache_hits_and_invalidates_on_source_revision() -> None:
+    source = NumpySource(np.arange(100, dtype=np.uint8).reshape(10, 10))
+    state = ViewerState(zoom=2)
+    cache = FrameCache(max_bytes=1024)
+    calls = 0
+
+    def converter(view: np.ndarray) -> np.ndarray:
+        nonlocal calls
+        calls += 1
+        return view.copy()
+
+    first = make_viewport_frame(
+        source, Pose(4, 5), state, converter=converter, cache=cache,
+        display_key=("uint8",),
+    )
+    second = make_viewport_frame(
+        source, Pose(4, 5), state, converter=converter, cache=cache,
+        display_key=("uint8",),
+    )
+    assert calls == 1
+    assert first.array is second.array
+    assert cache.bytes_used == first.array.nbytes
+
+    source.mark_dirty()
+    third = make_viewport_frame(
+        source, Pose(4, 5), state, converter=converter, cache=cache,
+        display_key=("uint8",),
+    )
+    assert calls == 2
+    assert third.source_revision == 1
+
+
+def test_frame_cache_is_lru_and_respects_byte_limit() -> None:
+    cache = FrameCache(max_bytes=8)
+    first = np.zeros((2, 2), dtype=np.uint8)
+    second = np.ones((2, 2), dtype=np.uint8)
+    third = np.full((2, 2), 2, dtype=np.uint8)
+    cache.put("first", first)
+    cache.put("second", second)
+    assert cache.get("first") is not None  # First becomes most recently used.
+    cache.put("third", third)
+
+    assert cache.bytes_used == 8
+    assert cache.get("first") is not None
+    assert cache.get("second") is None
+    assert cache.get("third") is not None
+
+    cache.put("too-large", np.zeros((3, 3), dtype=np.uint8))
+    assert cache.get("too-large") is None
+    assert cache.bytes_used == 8
