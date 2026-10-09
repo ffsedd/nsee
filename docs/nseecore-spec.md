@@ -389,3 +389,14 @@ timing-sensitive unit tests.
   large-source cases.
 - A short benchmark report records slicing/frame performance and memory use on
   the reference machine.
+
+## 15. Implementation record
+
+| Step | Status | Commit | Checks |
+|---|---|---|---|
+| Core viewport state and geometry | Done | `7c48ed1` | `uv run pytest tests/test_nseecore.py -q` (11 passed); Ruff; MyPy; `git diff --check` |
+| NumPy source, viewport frame, and bounded cache | Done | `75455c7` | `uv run pytest tests/test_nseecore.py -q` (16 passed); Ruff; MyPy; `git diff --check` |
+| nsee Tk adapter and example usage | Done | `bb070ad` | `uv run pytest -q` (18 passed); `uv run ruff check .`; `uv run mypy src`; `git diff --check`; `uv run nsee --help` |
+
+The implemented v1 zoom range is integer decimation down to 1:1. Magnification
+beyond 1:1 by repeating pixels is not implemented; wheel-up stops at 1:1.
