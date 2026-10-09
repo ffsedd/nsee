@@ -6,11 +6,12 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageTk
 
-from .geometry import Pose, ViewerState, selection_canvas_bounds
+from nseecore import FrameCache, ImageSource, ViewerState, make_viewport_frame
+from nseecore import Pose, selection_canvas_bounds
 
 
 class ImageView:
-    """Tk canvas that displays the image, selection, and status line."""
+    """Tk adapter demonstrating viewport-only rendering with ``nseecore``."""
 
     def __init__(self, root: tk.Tk, size: Pose) -> None:
         self.root = root
@@ -34,82 +35,92 @@ class ImageView:
         self.status.pack(side="bottom", fill="x")
         self._image_id: int | None = None
         self._tk_image: ImageTk.PhotoImage | None = None
-        self._source_image: np.ndarray | None = None
-        self._cached_zoom: int | None = None
+        self._source_identity: object | None = None
+        self._frame_cache = FrameCache(max_bytes=64 * 1024 * 1024)
+        self._converter = self._to_display_array
 
     def set_title(self, path: Path) -> None:
         self.root.title(f"{path.name} — {path.parent}")
 
     @staticmethod
-    def _to_photo(array: np.ndarray) -> ImageTk.PhotoImage:
+    def _to_display_array(array: np.ndarray) -> np.ndarray:
         if array.dtype != np.uint8:
             array = np.clip(array, 0, 1)
             array = (array * 255).astype(np.uint8)
+        return np.ascontiguousarray(array)
+
+    @staticmethod
+    def _to_photo(array: np.ndarray) -> ImageTk.PhotoImage:
         return ImageTk.PhotoImage(Image.fromarray(array))
 
-    def render(self, image: np.ndarray, state: ViewerState) -> None:
-        state.update_origin()
-        if image is not self._source_image or state.zoom != self._cached_zoom:
-            self._tk_image = self._to_photo(image[:: state.zoom, :: state.zoom])
-            self._source_image = image
-            self._cached_zoom = state.zoom
+    def render(self, source: ImageSource, state: ViewerState) -> None:
+        if source.cache_identity is not self._source_identity:
+            self._frame_cache.clear()
+            self._source_identity = source.cache_identity
 
-        if (
-            self._tk_image is not None
-            and self._tk_image.width()
-            and self._tk_image.height()
-        ):
+        frame = make_viewport_frame(
+            source,
+            self.canvas_size,
+            state,
+            converter=self._converter,
+            cache=self._frame_cache,
+            display_key=("uint8", "nsee-display-v1"),
+        )
+
+        if frame.array.size:
+            self._tk_image = self._to_photo(frame.array)
             if self._image_id is None:
                 self._image_id = self.canvas.create_image(
-                    state.img_origin.x,
-                    state.img_origin.y,
+                    frame.draw.x,
+                    frame.draw.y,
                     anchor="nw",
                     image=self._tk_image,
                     tags="image",
                 )
             else:
-                self.canvas.coords(
-                    self._image_id, state.img_origin.x, state.img_origin.y
-                )
+                self.canvas.coords(self._image_id, frame.draw.x, frame.draw.y)
                 self.canvas.itemconfig(
                     self._image_id, image=self._tk_image, state="normal"
                 )
         elif self._image_id is not None:
             self.canvas.itemconfig(self._image_id, state="hidden")
 
-        self._draw_selection(state)
-        self.update_status(state)
+        self._draw_selection(state, source.shape)
+        self.update_status(state, source.shape)
 
-    def update_status(self, state: ViewerState) -> None:
+    def update_status(
+        self, state: ViewerState, image_shape: tuple[int, ...]
+    ) -> None:
         pixel = state.image_pixel()
-        bounds = state.selection_bounds
+        bounds = state.selection_bounds(image_shape)
         if bounds is None:
             selection_text = "None"
         else:
-            y1, x1, y2, x2 = bounds
-            selection_text = f"{y1}:{x1} → {y2}:{x2} | size=({y2 - y1},{x2 - x1})"
+            y0, x0, y1, x1 = bounds
+            selection_text = f"{y0}:{x0} → {y1}:{x1} | size=({y1 - y0},{x1 - x0})"
         self.status.config(
             text=(
                 f"mouse=({state.mouse.y},{state.mouse.x}) | "
                 f"img_px=({pixel.y},{pixel.x}) | "
-                f"selected=({state.selected.y},{state.selected.x}) | "
                 f"sel_rect={selection_text} | "
-                f"origin=({state.img_origin.y},{state.img_origin.x}) | "
-                f"zoom={state.zoom}"
+                f"anchor=({state.sample_anchor_source.y},{state.sample_anchor_source.x}) | "
+                f"zoom_step={state.zoom}"
             )
         )
 
-    def _draw_selection(self, state: ViewerState) -> None:
+    def _draw_selection(
+        self, state: ViewerState, image_shape: tuple[int, ...]
+    ) -> None:
         self.canvas.delete("selection")
-        bounds = selection_canvas_bounds(state)
+        bounds = selection_canvas_bounds(state, image_shape)
         if bounds is None:
             return
-        x1, y1, x2, y2 = bounds
+        x0, y0, x1, y1 = bounds
         self.canvas.create_rectangle(
+            x0,
+            y0,
             x1,
             y1,
-            x2,
-            y2,
             outline="red",
             width=1,
             tags="selection",

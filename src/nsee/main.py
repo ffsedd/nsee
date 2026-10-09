@@ -6,12 +6,12 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
-from .geometry import Pose, ViewerState
 from .imagelist import ImageList
 from .io import save_image
 from .logger import setup_logger
 from .ops import rotate_jpeg_lossless
 from .view import ImageView
+from nseecore import NumpySource, Pose, ViewerState
 
 log = setup_logger("nsee")
 
@@ -31,6 +31,7 @@ class App:
 
         self.image_path = self.imagelist.current
         self.image = self.imagelist.load()
+        self.source = NumpySource(self.image)
         self.state = ViewerState()
         self.view = ImageView(root, CANVAS_SIZE)
         self.canvas = self.view.canvas
@@ -52,9 +53,9 @@ class App:
 
     def _bind_keys(self) -> None:
         root = self.view.root
-        root.bind("<MouseWheel>", self._on_wheel)
-        root.bind("<Button-4>", self._on_wheel)
-        root.bind("<Button-5>", self._on_wheel)
+        self.canvas.bind("<MouseWheel>", self._on_wheel)
+        self.canvas.bind("<Button-4>", self._on_wheel)
+        self.canvas.bind("<Button-5>", self._on_wheel)
         root.bind("<Left>", self._on_prev_image)
         root.bind("<Right>", self._on_next_image)
         root.bind("c", self._on_crop)
@@ -64,67 +65,75 @@ class App:
         self.canvas.focus_set()
 
     def _update_mouse(self, event) -> None:
-        self.state.mouse = Pose(
-            int(self.canvas.canvasy(event.y)), int(self.canvas.canvasx(event.x))
+        self.state.set_mouse(
+            Pose(int(self.canvas.canvasy(event.y)), int(self.canvas.canvasx(event.x)))
         )
 
     def _on_down(self, event) -> None:
         self._update_mouse(event)
-        self.state.select_anchor(self.image.shape)
+        self.state.begin_pan(self.state.mouse)
 
     def _on_drag(self, event) -> None:
         self._update_mouse(event)
+        self.state.pan_to(self.state.mouse)
+        self._schedule_render()
 
     def _on_up(self, event) -> None:
         self._update_mouse(event)
+        self.state.end_pan(self.state.mouse)
         self._render()
 
     def _on_move(self, event) -> None:
         self._update_mouse(event)
-        self.view.update_status(self.state)
+        self.view.update_status(self.state, self.image.shape)
 
     def _on_wheel(self, event) -> None:
-        self.state.select_anchor(self.image.shape)
+        self._update_mouse(event)
         if getattr(event, "num", None) == 4 or getattr(event, "delta", 0) > 0:
-            self.state.zoom = max(1, self.state.zoom - 1)
+            direction = 1
         else:
-            self.state.zoom = min(100, self.state.zoom + 1)
-        self._render()
+            direction = -1
+        if self.state.zoom_at(self.state.mouse, direction, self.image.shape):
+            self._render()
+        else:
+            self.view.update_status(self.state, self.image.shape)
 
     def _on_resize(self, event) -> None:
         self.view.canvas_size = Pose(event.height, event.width)
-        self._render()
+        self._schedule_render()
 
     def _on_right_down(self, event) -> None:
         self._update_mouse(event)
-        self.state.select_anchor(self.image.shape)
-        self.state.sel_start = self.state.image_pixel()
+        point = self._clamped_image_pixel()
+        self.state.sel_start = point
+        self.state.sel_end = point
 
     def _on_right_drag(self, event) -> None:
         self._update_mouse(event)
-        self.state.sel_end = self.state.image_pixel()
+        self.state.sel_end = self._clamped_image_pixel()
+        self._schedule_render()
 
     def _on_right_up(self, event) -> None:
         self._update_mouse(event)
-        self.state.select_anchor(self.image.shape)
-        self.state.sel_end = self.state.image_pixel()
+        self.state.sel_end = self._clamped_image_pixel()
         self._render()
 
+    def _clamped_image_pixel(self) -> Pose:
+        point = self.state.image_pixel()
+        height, width = self.image.shape[:2]
+        return Pose(
+            min(max(point.y, 0), height - 1),
+            min(max(point.x, 0), width - 1),
+        )
+
     def _on_crop(self, event=None) -> None:
-        bounds = self.state.selection_bounds
+        bounds = self.state.selection_bounds(self.image.shape)
         if bounds is None:
             return
-        y1, x1, y2, x2 = bounds
-        height, width = self.image.shape[:2]
-        y1, y2 = max(0, y1), min(height, y2)
-        x1, x2 = max(0, x1), min(width, x2)
-        if y1 >= y2 or x1 >= x2:
-            return
-        self.image = self.image[y1:y2, x1:x2].copy()
-        self.state.sel_start = None
-        self.state.sel_end = None
-        self.state.selected = Pose(0, 0)
-        self.state.img_origin = Pose(0, 0)
+        y0, x0, y1, x1 = bounds
+        self.image = self.image[y0:y1, x0:x1].copy()
+        self.source = NumpySource(self.image)
+        self.state.reset_view(self.state.zoom)
         self._render()
 
     def _on_save(self, event=None) -> None:
@@ -180,15 +189,23 @@ class App:
     def _load_current(self) -> None:
         self.image_path = self.imagelist.current
         self.image = self.imagelist.load()
+        self.source = NumpySource(self.image)
         self.view.set_title(self.image_path)
-        self.state.sel_start = None
-        self.state.sel_end = None
-        self.state.selected = Pose(0, 0)
-        self.state.img_origin = Pose(0, 0)
+        self.state.reset_view(self.state.zoom)
         self._render()
 
     def _render(self) -> None:
-        self.view.render(self.image, self.state)
+        self.view.render(self.source, self.state)
+
+    def _schedule_render(self) -> None:
+        if getattr(self, "_render_pending", False):
+            return
+        self._render_pending = True
+        self.view.root.after_idle(self._render_scheduled)
+
+    def _render_scheduled(self) -> None:
+        self._render_pending = False
+        self._render()
 
 
 def main() -> None:

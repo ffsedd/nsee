@@ -25,6 +25,41 @@ def test_visible_region_is_bounded_to_canvas_and_is_a_view() -> None:
     assert draw == Pose(0, 0)
 
 
+def test_randomized_slices_match_anchor_coordinate_mapping() -> None:
+    rng = np.random.default_rng(428)
+    for _ in range(250):
+        height, width = (int(value) for value in rng.integers(1, 80, size=2))
+        canvas_height, canvas_width = (
+            int(value) for value in rng.integers(0, 30, size=2)
+        )
+        step = int(rng.integers(1, 12))
+        source_anchor = Pose(
+            int(rng.integers(0, height)), int(rng.integers(0, width))
+        )
+        canvas_anchor = Pose(
+            int(rng.integers(-20, 40)), int(rng.integers(-20, 40))
+        )
+        state = ViewerState(
+            zoom=step,
+            sample_anchor_source=source_anchor,
+            sample_anchor_canvas=canvas_anchor,
+        )
+        image = np.arange(height * width).reshape(height, width)
+
+        rows, columns, draw = visible_image_region(
+            image.shape, Pose(canvas_height, canvas_width), state
+        )
+        visible = image[rows, columns]
+        assert visible.shape[0] <= canvas_height
+        assert visible.shape[1] <= canvas_width
+        for row in range(visible.shape[0]):
+            for column in range(visible.shape[1]):
+                canvas_y, canvas_x = draw.y + row, draw.x + column
+                source_y = source_anchor.y + (canvas_y - canvas_anchor.y) * step
+                source_x = source_anchor.x + (canvas_x - canvas_anchor.x) * step
+                assert visible[row, column] == image[source_y, source_x]
+
+
 def test_visible_region_keeps_zoom_anchor_sampling_phase() -> None:
     image = np.arange(100 * 100, dtype=np.int32).reshape(100, 100)
     state = ViewerState(
@@ -201,6 +236,18 @@ def test_make_viewport_frame_returns_only_visible_source_view() -> None:
     assert frame.source_revision == 0
 
 
+def test_numpy_source_preserves_channel_last_arrays() -> None:
+    image = np.zeros((12, 16, 4), dtype=np.uint16)
+    source = NumpySource(image)
+    state = ViewerState(zoom=2)
+
+    frame = make_viewport_frame(source, Pose(4, 5), state)
+
+    assert frame.array.shape == (4, 5, 4)
+    assert frame.array.dtype == np.uint16
+    assert np.shares_memory(image, frame.array)
+
+
 def test_converted_viewport_cache_hits_and_invalidates_on_source_revision() -> None:
     source = NumpySource(np.arange(100, dtype=np.uint8).reshape(10, 10))
     state = ViewerState(zoom=2)
@@ -231,6 +278,18 @@ def test_converted_viewport_cache_hits_and_invalidates_on_source_revision() -> N
     )
     assert calls == 2
     assert third.source_revision == 1
+
+    state.sample_anchor_canvas = Pose(1, 0)
+    make_viewport_frame(
+        source, Pose(4, 5), state, converter=converter, cache=cache,
+        display_key=("uint8",),
+    )
+    assert calls == 3
+    make_viewport_frame(
+        source, Pose(4, 5), state, converter=converter, cache=cache,
+        display_key=("uint8", "changed-window"),
+    )
+    assert calls == 4
 
 
 def test_frame_cache_is_lru_and_respects_byte_limit() -> None:

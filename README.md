@@ -18,3 +18,10 @@ to save as, or `Ctrl+S` to save over the current image. Press `r` to rotate a
 JPEG losslessly; this requires `jpegtran` on `PATH`.
 
 Pass `--debug` to enable debug logging.
+
+## Viewer core
+
+The GUI uses the GUI-independent `nseecore` package for integer-stride zoom,
+pointer anchoring, pan state, half-open selections, and active-view NumPy
+slicing. `src/nsee/view.py` shows how to adapt its `ViewportFrame` to Tk without
+creating a full-image display copy.

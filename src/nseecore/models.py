@@ -75,11 +75,11 @@ class ViewerState:
         new_zoom = max(1, self.zoom - 1) if direction > 0 else min(
             self.max_zoom, self.zoom + 1
         )
-        self.mouse = pointer
         if new_zoom == self.zoom:
             return False
 
         anchor = self.image_pixel(pointer)
+        self.mouse = pointer
         self.sample_anchor_source = Pose(
             min(max(anchor.y, 0), height - 1),
             min(max(anchor.x, 0), width - 1),
