@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Should the viewers share a core?</title>
+<style>
+:root{color-scheme:light dark;--bg:#f7f8fa;--surface:#fff;--ink:#18212b;--muted:#5c6875;--line:#dce1e7;--accent:#2856a6;--soft:#edf3fc;--callout:#eef5ff}
+@media(prefers-color-scheme:dark){:root{--bg:#171a1f;--surface:#20252c;--ink:#edf1f5;--muted:#aeb8c4;--line:#39414c;--accent:#a9c5ff;--soft:#29374b;--callout:#222f40}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:1120px;margin:auto;padding:36px 24px 56px}h1{font-size:clamp(1.8rem,4vw,2.35rem);line-height:1.15;margin:0}h2{font-size:1.35rem;margin:34px 0 14px}h3{font-size:1rem;margin:0 0 6px}.intro{color:var(--muted);max-width:850px;margin:14px 0 26px}.title-row{display:flex;flex-wrap:wrap;gap:12px;align-items:center}.badge{border-radius:999px;background:var(--soft);color:var(--accent);padding:5px 11px;font-weight:650;font-size:.85rem}.columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.panel{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:20px}.panel h2{margin:0 0 8px;font-size:1.2rem}.summary{font-weight:600;margin:0 0 12px}.panel ul{padding-left:20px;margin:0 0 14px}.panel li{margin:7px 0;color:var(--muted)}.boundary{font-size:.88rem;color:var(--muted);border-top:1px solid var(--line);padding-top:12px}code{font: .92em ui-monospace,SFMono-Regular,Consolas,monospace;background:var(--soft);padding:2px 5px;border-radius:4px}.primitives{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:22px}.primitive p{color:var(--muted);margin:0}.callout{background:var(--callout);border-left:4px solid var(--accent);padding:16px 18px;border-radius:7px;margin:28px 0}.callout strong{display:block;margin-bottom:5px}.decision{border-top:1px solid var(--line);padding-top:18px}.evidence{color:var(--muted);font-size:.88rem;margin-top:14px}@media(max-width:700px){main{padding:26px 16px 40px}.columns,.primitives{grid-template-columns:1fr}.panel{padding:16px}}
+</style>
+</head>
+<body><main>
+<header>
+<div class="title-row"><h1>Should the viewers share a core?</h1><span class="badge">Recommendation: small core</span></div>
+<p class="intro">The overlap is real in viewport math and display caching; the image models and user workflows are different enough that sharing the apps would create coupling.</p>
+</header>
+<section class="columns" aria-label="Viewer comparison">
+<article class="panel"><h2>nsee</h2><p class="summary">A small general raster viewer and editor.</p><ul><li>Pillow loads RGB or grayscale files into NumPy arrays.</li><li>Integer zoom is inverse sampling: each screen pixel represents a zoom-sized source step.</li><li>ImageView caches one sampled PhotoImage for the current array and zoom; pan changes its canvas position.</li><li>Selection, crop, save, JPEG rotation, and directory navigation belong to this app.</li></ul><div class="boundary">Existing boundary: <code>geometry.py · view.py · imagelist.py · io.py · ops.py</code></div></article>
+<article class="panel"><h2>rdxkit tile_viewer</h2><p class="summary">A scientific grayscale and PBF inspection tool.</p><ul><li>PBF loads as uint32; common formats are converted to grayscale.</li><li>Zoom is a direct float scale; zoom-in repeats pixels and zoom-out samples them.</li><li>Pan currently normalizes, resizes, creates a PhotoImage, clears the canvas, and redraws on each motion.</li><li>Percentile/range normalization, histogram, statistics, and PBF handling are domain features.</li></ul><div class="boundary">Existing boundary: <code>tile.py · imageio.py · utils.py · gui.py</code></div></article>
+</section>
+<h2>Share these primitives</h2>
+<section class="primitives">
+<article class="primitive"><h3>Viewport math</h3><p>A toolkit-independent transform for image coordinates, screen coordinates, pan offsets, zoom-at-cursor, and selection bounds. Represent scale as screen pixels per image pixel; nsee can map its current inverse integer zoom to <code>scale = 1 / zoom</code>.</p></article>
+<article class="primitive"><h3>Display pipeline</h3><p>Small NumPy helpers for nearest-neighbor sampling, grayscale normalization, and a bounded cache keyed by source revision, display settings, and scale. UI adapters keep Tk PhotoImage work out of the core.</p></article>
+<article class="primitive"><h3>Image-source contract</h3><p>A minimal protocol for shape, dtype, pixel/tile reads, and source identity. Keep eager raster arrays and PBF-specific loading as separate adapters; defer tiled/region reads until image sizes require them.</p></article>
+</section>
+<aside class="callout"><strong>Keep app features local</strong>Keep file navigation, crop/save/rotate in nsee. Keep PBF loading, intensity normalization, histogram, and statistics in rdxkit. Do not share Tk widgets, window layout, or application controllers.</aside>
+<section class="decision"><h2>Decision</h2><p>Build the core only if both viewers will remain actively maintained. Start with a small <code>viewer_core</code> package containing pure transforms and display-array utilities; leave loaders and GUI adapters in each project. If this is only to deduplicate a few functions, use tests and copy the stable math instead of adding a separately versioned dependency.</p><p class="evidence">Evidence inspected: nsee <code>geometry.py</code>, <code>view.py</code>, <code>io.py</code>; rdxkit <code>tile.py</code>, <code>imageio.py</code>, <code>utils.py</code>, and <code>gui.py</code>. Both source trees were read only.</p></section>
+</main></body></html>
